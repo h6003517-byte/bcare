@@ -2,6 +2,24 @@
 # https://render.com/docs/yaml-spec
 
 services:
+  # Frontend Static Site
+  - type: web
+    name: bcare-frontend
+    runtime: static
+    region: oregon
+    plan: free
+    buildCommand: npx -y pnpm@9 install --no-frozen-lockfile && npx -y pnpm@9 --filter mockup-sandbox build
+    staticPublishPath: artifacts/mockup-sandbox/dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=0, must-revalidate
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  # API Server
   - type: web
     name: api-server
     runtime: node
@@ -16,5 +34,7 @@ services:
         value: production
       - key: PORT
         value: "10000"
-      - key: DATABASE_URL
-        sync: false
+      - fromService:
+          name: bcare-frontend
+          envVarKey: FRONTEND_URL
+          type: reference
