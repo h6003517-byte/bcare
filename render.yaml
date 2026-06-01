@@ -8,8 +8,8 @@ services:
     region: oregon
     plan: free
     nodeVersion: "24"
-    buildCommand: corepack enable && corepack prepare pnpm@latest --activate && pnpm install && pnpm --filter api-server build
-    startCommand: cd artifacts/api-server && pnpm run start
+    buildCommand: npm install -g pnpm@9 && pnpm install && pnpm --filter api-server build
+    startCommand: cd artifacts/api-server && node --enable-source-maps ./dist/index.mjs
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
