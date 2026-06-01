@@ -33,7 +33,7 @@ export default defineConfig({
   build: {
     target: "es2017",
     cssTarget: "chrome61",
-    outDir: path.resolve(__dirname, "dist/public"),
+    outDir: path.resolve(__dirname, "dist"),
     emptyOutDir: true,
   },
   server: {
