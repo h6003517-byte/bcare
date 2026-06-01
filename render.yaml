@@ -1,0 +1,20 @@
+# render.yaml
+# https://render.com/docs/yaml-spec
+
+services:
+  - type: web
+    name: api-server
+    runtime: node
+    region: oregon
+    plan: free
+    nodeVersion: "24"
+    buildCommand: corepack enable && corepack prepare pnpm@latest --activate && pnpm install && pnpm --filter api-server build
+    startCommand: cd artifacts/api-server && pnpm run start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: DATABASE_URL
+        sync: false
