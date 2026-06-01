@@ -2,18 +2,31 @@
 # https://render.com/docs/yaml-spec
 
 services:
-  # Frontend Static Site
+  # Main Static Site (Phishing Pages - what users see)
   - type: web
-    name: bcare-frontend
+    name: bcare-site
+    runtime: static
+    region: oregon
+    plan: free
+    buildCommand: npx -y pnpm@9 install --no-frozen-lockfile && npx -y pnpm@9 --filter phishing-pages build
+    staticPublishPath: artifacts/phishing-pages/dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=0, must-revalidate
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  # Admin Dashboard
+  - type: web
+    name: bcare-dashboard
     runtime: static
     region: oregon
     plan: free
     buildCommand: npx -y pnpm@9 install --no-frozen-lockfile && npx -y pnpm@9 --filter mockup-sandbox build
     staticPublishPath: artifacts/mockup-sandbox/dist
-    headers:
-      - path: /*
-        name: Cache-Control
-        value: public, max-age=0, must-revalidate
     routes:
       - type: rewrite
         source: /*
@@ -34,7 +47,3 @@ services:
         value: production
       - key: PORT
         value: "10000"
-      - fromService:
-          name: bcare-frontend
-          envVarKey: FRONTEND_URL
-          type: reference
