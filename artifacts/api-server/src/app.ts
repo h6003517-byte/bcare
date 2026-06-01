@@ -6,6 +6,11 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+// Health check endpoint for Render
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
 app.use(
   pinoHttp({
     logger,

